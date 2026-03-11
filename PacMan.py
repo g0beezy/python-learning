@@ -1,5 +1,6 @@
 import pygame
 import sys
+import random
 import math
 
 # 初始化
@@ -21,6 +22,11 @@ WHITE = (255, 255, 255)
 BLUE = (33, 33, 222)
 PINK = (255, 184, 255)
 DOT_COLOR = (255, 183, 174)
+RED = (255, 0, 0)
+ORANGE = (255, 165, 0)
+CYAN = (0, 255, 255)
+GHOST_BLUE = (33, 33, 255)
+GHOST_SPEED = 2
 
 # 地图 (0=空 1=墙 2=豆子 3=大力丸 4=空地无豆子)
 LEVEL = [
@@ -194,6 +200,163 @@ def draw_hud():
     screen.blit(lives_text, (WIDTH - 120, HEIGHT - 40))
 
 
+# --- 幽灵类 ---
+class Ghost:
+    def __init__(self, col, row, color, name):
+        self.x = col * TILE
+        self.y = row * TILE
+        self.color = color
+        self.name = name
+        self.dir = 'UP'
+        self.speed = GHOST_SPEED
+        self.home_x = col * TILE
+        self.home_y = row * TILE
+
+    def get_target(self):
+        """根据幽灵性格计算目标位置"""
+        if self.name == 'blinky':
+            # 红：直接追吃豆人
+            return pac_x, pac_y
+        elif self.name == 'pinky':
+            # 粉：追吃豆人前方4格
+            tx, ty = pac_x, pac_y
+            if pac_dir == 'LEFT':
+                tx -= 4 * TILE
+            elif pac_dir == 'RIGHT':
+                tx += 4 * TILE
+            elif pac_dir == 'UP':
+                ty -= 4 * TILE
+            elif pac_dir == 'DOWN':
+                ty += 4 * TILE
+            return tx, ty
+        elif self.name == 'inky':
+            # 蓝：随机+追踪混合
+            if random.random() < 0.3:
+                return random.randint(0, WIDTH), random.randint(0, ROWS * TILE)
+            return pac_x, pac_y
+        elif self.name == 'clyde':
+            # 橙：远了追，近了跑
+            dist = math.sqrt((self.x - pac_x) ** 2 + (self.y - pac_y) ** 2)
+            if dist > 8 * TILE:
+                return pac_x, pac_y
+            else:
+                return self.home_x, self.home_y
+        return pac_x, pac_y
+
+    def ghost_can_move(self, px, py, direction):
+        """幽灵的碰墙检测"""
+        if direction == 'LEFT':
+            nx, ny = px - self.speed, py
+        elif direction == 'RIGHT':
+            nx, ny = px + self.speed, py
+        elif direction == 'UP':
+            nx, ny = px, py - self.speed
+        elif direction == 'DOWN':
+            nx, ny = px, py + self.speed
+        else:
+            return False
+
+        if nx < -TILE or nx >= WIDTH:
+            return True
+
+        margin = 1
+        corners = [
+            (nx + margin, ny + margin),
+            (nx + TILE - 1 - margin, ny + margin),
+            (nx + margin, ny + TILE - 1 - margin),
+            (nx + TILE - 1 - margin, ny + TILE - 1 - margin),
+        ]
+        for cx, cy in corners:
+            c = int(cx) // TILE
+            r = int(cy) // TILE
+            if r < 0 or r >= ROWS or c < 0 or c >= COLS:
+                return False
+            if game_map[r][c] == 1:
+                return False
+        return True
+
+    def get_opposite(self):
+        opp = {'LEFT': 'RIGHT', 'RIGHT': 'LEFT', 'UP': 'DOWN', 'DOWN': 'UP'}
+        return opp.get(self.dir, 'STOP')
+
+    def update(self):
+        """每帧更新幽灵位置"""
+        if self.x % TILE == 0 and self.y % TILE == 0:
+            target_x, target_y = self.get_target()
+            directions = ['LEFT', 'RIGHT', 'UP', 'DOWN']
+            opposite = self.get_opposite()
+            # 不能掉头
+            possible = [d for d in directions if d != opposite and self.ghost_can_move(self.x, self.y, d)]
+
+            if not possible:
+                possible = [d for d in directions if self.ghost_can_move(self.x, self.y, d)]
+
+            if possible:
+                best_dir = possible[0]
+                best_dist = float('inf')
+                for d in possible:
+                    nx, ny = self.x, self.y
+                    if d == 'LEFT': nx -= TILE
+                    elif d == 'RIGHT': nx += TILE
+                    elif d == 'UP': ny -= TILE
+                    elif d == 'DOWN': ny += TILE
+                    dist = (nx - target_x) ** 2 + (ny - target_y) ** 2
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_dir = d
+                self.dir = best_dir
+
+        if self.ghost_can_move(self.x, self.y, self.dir):
+            if self.dir == 'LEFT': self.x -= self.speed
+            elif self.dir == 'RIGHT': self.x += self.speed
+            elif self.dir == 'UP': self.y -= self.speed
+            elif self.dir == 'DOWN': self.y += self.speed
+
+        # 隧道传送
+        if self.x < -TILE: self.x = WIDTH - TILE
+        elif self.x >= WIDTH: self.x = 0
+
+    def draw(self):
+        """绘制幽灵"""
+        cx = self.x + TILE // 2
+        cy = self.y + TILE // 2
+        r = TILE // 2 - 1
+        # 头部半圆
+        pygame.draw.circle(screen, self.color, (cx, cy - 1), r)
+        # 身体矩形
+        pygame.draw.rect(screen, self.color, (self.x + 1, cy - 1, TILE - 2, r))
+        # 底部锯齿
+        w = (TILE - 2) // 3
+        for i in range(3):
+            bx = self.x + 1 + i * w
+            pygame.draw.polygon(screen, self.color, [
+                (bx, cy + r - 2),
+                (bx + w // 2, cy + r + 2),
+                (bx + w, cy + r - 2),
+            ])
+        # 眼睛
+        eye_r = 3
+        pygame.draw.circle(screen, WHITE, (cx - 4, cy - 3), eye_r)
+        pygame.draw.circle(screen, WHITE, (cx + 4, cy - 3), eye_r)
+        # 瞳孔（看向移动方向）
+        dx, dy = 0, 0
+        if self.dir == 'LEFT': dx = -1
+        elif self.dir == 'RIGHT': dx = 1
+        elif self.dir == 'UP': dy = -1
+        elif self.dir == 'DOWN': dy = 1
+        pygame.draw.circle(screen, BLACK, (cx - 4 + dx, cy - 3 + dy), 2)
+        pygame.draw.circle(screen, BLACK, (cx + 4 + dx, cy - 3 + dy), 2)
+
+
+# 创建4个幽灵（从幽灵屋出发）
+ghosts = [
+    Ghost(13, 13, RED, 'blinky'),
+    Ghost(14, 13, PINK, 'pinky'),
+    Ghost(13, 14, CYAN, 'inky'),
+    Ghost(14, 14, ORANGE, 'clyde'),
+]
+
+
 # 游戏主循环
 running = True
 while running:
@@ -253,10 +416,16 @@ while running:
         pac_anim_timer = 0
         pac_frame += 1
 
+    # 更新幽灵
+    for ghost in ghosts:
+        ghost.update()
+
     # 绘制
     screen.fill(BLACK)
     draw_map()
     draw_pacman()
+    for ghost in ghosts:
+        ghost.draw()
     draw_hud()
     pygame.display.flip()
 
