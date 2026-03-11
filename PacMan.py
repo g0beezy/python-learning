@@ -83,6 +83,9 @@ score = 0
 lives = 3
 dots_total = sum(row.count(2) + row.count(3) for row in LEVEL)
 dots_eaten = 0
+frightened_timer = 0   # 大力丸剩余帧数
+FRIGHTENED_DURATION = 300  # 5秒
+ghost_eat_combo = 0    # 连续吃幽灵计数（200/400/800/1600）
 
 
 def get_tile(px, py):
@@ -217,9 +220,18 @@ class Ghost:
         self.release_delay = release_delay  # 延迟出屋帧数
         self.release_timer = release_delay
         self.exiting = True  # 出屋阶段
+        self.frightened = False  # 受惊状态
+        self.eaten = False       # 被吃掉（变眼睛回家）
 
     def get_target(self):
         """根据幽灵性格计算目标位置"""
+        if self.eaten:
+            return self.home_x, self.home_y
+        if self.frightened:
+            # 受惊：逃离吃豆人
+            dx = self.x - pac_x
+            dy = self.y - pac_y
+            return self.x + dx * 3, self.y + dy * 3
         if self.name == 'blinky':
             # 红：直接追吃豆人
             return pac_x, pac_y
@@ -352,31 +364,54 @@ class Ghost:
         cx = self.x + TILE // 2
         cy = self.y + TILE // 2
         r = TILE // 2 - 1
+
+        if self.eaten:
+            # 只画眼睛（回家中）
+            pygame.draw.circle(screen, WHITE, (cx - 4, cy - 3), 3)
+            pygame.draw.circle(screen, WHITE, (cx + 4, cy - 3), 3)
+            dx, dy = 0, 0
+            if self.dir == 'LEFT': dx = -1
+            elif self.dir == 'RIGHT': dx = 1
+            elif self.dir == 'UP': dy = -1
+            elif self.dir == 'DOWN': dy = 1
+            pygame.draw.circle(screen, (0, 100, 255), (cx - 4 + dx, cy - 3 + dy), 2)
+            pygame.draw.circle(screen, (0, 100, 255), (cx + 4 + dx, cy - 3 + dy), 2)
+            return
+
+        # 受惊时闪烁（剩余不足2秒时白蓝交替警告）
+        if self.frightened:
+            if frightened_timer < 120 and (frightened_timer // 15) % 2 == 0:
+                draw_color = WHITE
+            else:
+                draw_color = GHOST_BLUE
+        else:
+            draw_color = self.color
+
         # 头部半圆
-        pygame.draw.circle(screen, self.color, (cx, cy - 1), r)
+        pygame.draw.circle(screen, draw_color, (cx, cy - 1), r)
         # 身体矩形
-        pygame.draw.rect(screen, self.color, (self.x + 1, cy - 1, TILE - 2, r))
+        pygame.draw.rect(screen, draw_color, (self.x + 1, cy - 1, TILE - 2, r))
         # 底部锯齿
         w = (TILE - 2) // 3
         for i in range(3):
             bx = self.x + 1 + i * w
-            pygame.draw.polygon(screen, self.color, [
+            pygame.draw.polygon(screen, draw_color, [
                 (bx, cy + r - 2),
                 (bx + w // 2, cy + r + 2),
                 (bx + w, cy + r - 2),
             ])
-        # 眼睛
-        eye_r = 3
-        pygame.draw.circle(screen, WHITE, (cx - 4, cy - 3), eye_r)
-        pygame.draw.circle(screen, WHITE, (cx + 4, cy - 3), eye_r)
-        # 瞳孔（看向移动方向）
-        dx, dy = 0, 0
-        if self.dir == 'LEFT': dx = -1
-        elif self.dir == 'RIGHT': dx = 1
-        elif self.dir == 'UP': dy = -1
-        elif self.dir == 'DOWN': dy = 1
-        pygame.draw.circle(screen, BLACK, (cx - 4 + dx, cy - 3 + dy), 2)
-        pygame.draw.circle(screen, BLACK, (cx + 4 + dx, cy - 3 + dy), 2)
+        # 眼睛（受惊时不画眼睛）
+        if not self.frightened:
+            eye_r = 3
+            pygame.draw.circle(screen, WHITE, (cx - 4, cy - 3), eye_r)
+            pygame.draw.circle(screen, WHITE, (cx + 4, cy - 3), eye_r)
+            dx, dy = 0, 0
+            if self.dir == 'LEFT': dx = -1
+            elif self.dir == 'RIGHT': dx = 1
+            elif self.dir == 'UP': dy = -1
+            elif self.dir == 'DOWN': dy = 1
+            pygame.draw.circle(screen, BLACK, (cx - 4 + dx, cy - 3 + dy), 2)
+            pygame.draw.circle(screen, BLACK, (cx + 4 + dx, cy - 3 + dy), 2)
 
 
 # 创建4个幽灵（错开时间出屋：0/2/4/6秒）
@@ -401,6 +436,8 @@ def reset_positions():
         g.dir = 'UP'
         g.exiting = True
         g.release_timer = g.release_delay
+        g.frightened = False
+        g.eaten = False
 
 
 def check_ghost_collision():
@@ -443,6 +480,8 @@ while running:
                 score = 0
                 lives = 3
                 dots_eaten = 0
+                frightened_timer = 0
+                ghost_eat_combo = 0
                 game_map[:] = [row[:] for row in LEVEL]
                 reset_positions()
                 continue
@@ -507,6 +546,12 @@ while running:
             game_map[row][col] = 4
             score += 50
             dots_eaten += 1
+            # 激活大力丸：所有幽灵进入受惊状态
+            frightened_timer = FRIGHTENED_DURATION
+            ghost_eat_combo = 0
+            for g in ghosts:
+                if not g.eaten:
+                    g.frightened = True
 
     # 嘴巴动画
     pac_anim_timer += 1
@@ -518,14 +563,49 @@ while running:
     for ghost in ghosts:
         ghost.update()
 
+    # 大力丸倒计时
+    if frightened_timer > 0:
+        frightened_timer -= 1
+        if frightened_timer == 0:
+            for g in ghosts:
+                g.frightened = False
+            ghost_eat_combo = 0
+
     # 碰撞检测
     if check_ghost_collision():
-        lives -= 1
-        if lives <= 0:
-            game_over = True
-        else:
-            reset_positions()
-            death_timer = 60  # 停顿1秒
+        # 判断碰到的是受惊幽灵还是正常幽灵
+        pac_rect = pygame.Rect(pac_x + 2, pac_y + 2, TILE - 4, TILE - 4)
+        hit_normal = False
+        for g in ghosts:
+            ghost_rect = pygame.Rect(g.x + 2, g.y + 2, TILE - 4, TILE - 4)
+            if pac_rect.colliderect(ghost_rect):
+                if g.frightened:
+                    # 吃掉幽灵
+                    g.frightened = False
+                    g.eaten = True
+                    ghost_eat_combo += 1
+                    score += 200 * (2 ** (ghost_eat_combo - 1))  # 200/400/800/1600
+                elif not g.eaten:
+                    hit_normal = True
+        if hit_normal:
+            lives -= 1
+            if lives <= 0:
+                game_over = True
+            else:
+                reset_positions()
+                frightened_timer = 0
+                ghost_eat_combo = 0
+                death_timer = 60  # 停顿1秒
+
+    # 被吃掉的幽灵回到家后复活
+    for g in ghosts:
+        if g.eaten:
+            home_rect = pygame.Rect(g.home_x, g.home_y, TILE, TILE)
+            cur_rect = pygame.Rect(g.x, g.y, TILE, TILE)
+            if cur_rect.colliderect(home_rect):
+                g.eaten = False
+                g.exiting = True
+                g.release_timer = 60  # 1秒后重新出屋
 
     # 绘制
     screen.fill(BLACK)
