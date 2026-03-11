@@ -292,7 +292,8 @@ class Ghost:
             if game_map[r][c] == 1:
                 return False
             # 已出屋的幽灵不能再进入幽灵屋内部（行12-16，列11-16）
-            if not self.exiting and 12 <= r <= 16 and 11 <= c <= 16:
+            # 被吃掉回家的幽灵可以进入
+            if not self.exiting and not self.eaten and 12 <= r <= 16 and 11 <= c <= 16:
                 return False
         return True
 
@@ -414,12 +415,12 @@ class Ghost:
             pygame.draw.circle(screen, BLACK, (cx + 4 + dx, cy - 3 + dy), 2)
 
 
-# 创建4个幽灵（错开时间出屋：0/2/4/6秒）
+# 创建4个幽灵（错开时间出屋：1/2/4/6秒）
 ghosts = [
-    Ghost(13, 13, RED,    'blinky', release_delay=120),
-    Ghost(14, 13, PINK,   'pinky',  release_delay=240),
-    Ghost(13, 14, CYAN,   'inky',   release_delay=360),
-    Ghost(14, 14, ORANGE, 'clyde',  release_delay=480),
+    Ghost(13, 13, RED,    'blinky', release_delay=60),
+    Ghost(14, 13, PINK,   'pinky',  release_delay=120),
+    Ghost(13, 14, CYAN,   'inky',   release_delay=240),
+    Ghost(14, 14, ORANGE, 'clyde',  release_delay=360),
 ]
 
 
@@ -461,8 +462,20 @@ def draw_game_over():
     screen.blit(text3, (WIDTH // 2 - text3.get_width() // 2, HEIGHT // 2 + 40))
 
 
+def draw_stage_clear():
+    font_big = pygame.font.SysFont("microsoftyahei", 48)
+    font_small = pygame.font.SysFont("microsoftyahei", 24)
+    text1 = font_big.render("通关！", True, YELLOW)
+    text2 = font_small.render(f"最终分数: {score}", True, WHITE)
+    text3 = font_small.render("按 R 重新开始", True, CYAN)
+    screen.blit(text1, (WIDTH // 2 - text1.get_width() // 2, HEIGHT // 2 - 60))
+    screen.blit(text2, (WIDTH // 2 - text2.get_width() // 2, HEIGHT // 2))
+    screen.blit(text3, (WIDTH // 2 - text3.get_width() // 2, HEIGHT // 2 + 40))
+
+
 # 游戏状态
 game_over = False
+stage_clear = False
 death_timer = 0  # 死亡后短暂停顿
 
 # 游戏主循环
@@ -474,9 +487,10 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.KEYDOWN:
-            if game_over and event.key == pygame.K_r:
+            if (game_over or stage_clear) and event.key == pygame.K_r:
                 # 重新开始
                 game_over = False
+                stage_clear = False
                 score = 0
                 lives = 3
                 dots_eaten = 0
@@ -509,6 +523,12 @@ while running:
     if game_over:
         screen.fill(BLACK)
         draw_game_over()
+        pygame.display.flip()
+        continue
+
+    if stage_clear:
+        screen.fill(BLACK)
+        draw_stage_clear()
         pygame.display.flip()
         continue
 
@@ -552,6 +572,10 @@ while running:
             for g in ghosts:
                 if not g.eaten:
                     g.frightened = True
+
+    # 通关检测
+    if dots_eaten >= dots_total:
+        stage_clear = True
 
     # 嘴巴动画
     pac_anim_timer += 1
@@ -600,9 +624,10 @@ while running:
     # 被吃掉的幽灵回到家后复活
     for g in ghosts:
         if g.eaten:
-            home_rect = pygame.Rect(g.home_x, g.home_y, TILE, TILE)
-            cur_rect = pygame.Rect(g.x, g.y, TILE, TILE)
-            if cur_rect.colliderect(home_rect):
+            dist = abs(g.x - g.home_x) + abs(g.y - g.home_y)
+            if dist < GHOST_SPEED * 2:
+                g.x = g.home_x
+                g.y = g.home_y
                 g.eaten = False
                 g.exiting = True
                 g.release_timer = 60  # 1秒后重新出屋
