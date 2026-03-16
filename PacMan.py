@@ -2,9 +2,12 @@ import pygame
 import sys
 import random
 import math
+import array as _array
 
 # 初始化
+pygame.mixer.pre_init(44100, -16, 2, 512)
 pygame.init()
+pygame.mixer.set_num_channels(8)
 
 # 常量
 TILE = 24
@@ -27,6 +30,129 @@ ORANGE = (255, 165, 0)
 CYAN = (0, 255, 255)
 GHOST_BLUE = (33, 33, 255)
 GHOST_SPEED = 2
+
+# ──────────────────────────────────────────
+# 音效（纯标准库合成 PCM，无需 numpy 或外部文件）
+# ──────────────────────────────────────────
+_SR = 44100
+_2PI = 2 * math.pi
+
+def _gen_sine(freq, dur, vol=0.45):
+    """返回 array.array('h') 立体声 int16 正弦波"""
+    n = max(1, int(_SR * dur))
+    fade = min(int(_SR * 0.006), n // 4)
+    buf = _array.array('h')
+    for i in range(n):
+        v = math.sin(_2PI * freq * i / _SR) * vol * 32767
+        if fade:
+            if i < fade:       v *= i / fade
+            elif i >= n - fade: v *= (n - i) / fade
+        s = max(-32768, min(32767, int(v)))
+        buf.append(s); buf.append(s)
+    return buf
+
+def _gen_chirp(f0, f1, dur, vol=0.45):
+    """返回 array.array('h') 立体声 int16 线性扫频"""
+    n = max(1, int(_SR * dur))
+    fade = min(int(_SR * 0.005), n // 4)
+    buf = _array.array('h')
+    phase = 0.0
+    for i in range(n):
+        phase += _2PI * (f0 + (f1 - f0) * i / n) / _SR
+        v = math.sin(phase) * vol * 32767
+        if fade:
+            if i < fade:       v *= i / fade
+            elif i >= n - fade: v *= (n - i) / fade
+        s = max(-32768, min(32767, int(v)))
+        buf.append(s); buf.append(s)
+    return buf
+
+def _gen_silence(dur):
+    n = max(1, int(_SR * dur))
+    return _array.array('h', [0] * (n * 2))
+
+def _seq_sound(notes, vol=0.45):
+    """拼接音符列表 [(freq_or_None, dur), ...] -> Sound"""
+    combined = _array.array('h')
+    for f, d in notes:
+        combined.extend(_gen_sine(f, d, vol) if f else _gen_silence(d))
+    return pygame.mixer.Sound(buffer=combined)
+
+def _chirp_sound(f0, f1, dur, vol=0.45):
+    return pygame.mixer.Sound(buffer=_gen_chirp(f0, f1, dur, vol))
+
+# 经典吃豆人序曲 Beginning Music（约 130 BPM）
+_q = 0.115   # 八分音符时值
+_h = _q * 2  # 四分音符
+_e = _q / 2  # 十六分音符
+_FQ = {
+    'B4': 493.88, 'Bb4': 466.16, 'A4': 440.00, 'Ab4': 415.30,
+    'G4': 392.00, 'Gb4': 369.99, 'F4': 349.23, 'E4': 329.63,
+    'Eb4': 311.13, 'D4': 293.66, 'C4': 261.63,
+    'A3': 220.00, 'Ab3': 207.65, 'Gb3': 185.00,
+    'F3': 174.61, 'E3': 164.81, 'Eb3': 155.56, 'D3': 146.83,
+}
+snd_intro = _seq_sound([
+    (_FQ['B4'],  _q), (_FQ['B4'],  _q), (None,        _e),
+    (_FQ['B4'],  _q), (None,        _e), (_FQ['B4'],  _q),
+    (_FQ['Ab4'], _q), (_FQ['A4'],  _q),
+    (_FQ['B4'],  _h), (_FQ['A4'],  _q), (_FQ['Ab4'], _h), (None, _q),
+    (_FQ['E4'],  _h), (None,        _q), (_FQ['E4'],  _h), (None, _q),
+    (_FQ['C4'],  _q), (_FQ['D4'],  _q), (_FQ['E4'],  _h),
+    (_FQ['D4'],  _q), (_FQ['C4'],  _h), (None,        _q),
+    (_FQ['A3'],  _h), (None,        _q), (_FQ['A3'],  _h), (None, _q),
+    (_FQ['Gb3'], _q), (_FQ['Ab3'], _q), (_FQ['A3'],  _h),
+    (_FQ['Ab3'], _q), (_FQ['Gb3'], _h), (None,        _q),
+    (_FQ['E3'],  _q), (_FQ['Eb3'], _q), (_FQ['E3'],  _q), (_FQ['F3'],  _q),
+    (_FQ['E3'],  _q), (_FQ['Eb3'], _q), (_FQ['E3'],  _h + _q),
+], vol=0.4)
+
+# 吃小豆子 waka-waka（两种音交替）
+snd_waka = [
+    _chirp_sound(1050, 520, 0.07),
+    _chirp_sound(860,  420, 0.07),
+]
+_waka_idx = 0
+
+# 吃大力丸音效
+snd_power = _seq_sound([(1200, 0.05), (1550, 0.05), (1900, 0.10)], vol=0.5)
+
+# 吃幽灵音效（上升扫频）
+snd_ghost = _chirp_sound(380, 1900, 0.16, vol=0.5)
+
+# 死亡音效（半音阶下行）
+snd_death = _seq_sound([
+    (_FQ['B4'],  0.07), (_FQ['Bb4'], 0.07), (_FQ['A4'],  0.07), (_FQ['Ab4'], 0.07),
+    (_FQ['G4'],  0.07), (_FQ['Gb4'], 0.07), (_FQ['F4'],  0.07), (_FQ['E4'],  0.07),
+    (_FQ['Eb4'], 0.13), (_FQ['D4'],  0.13), (_FQ['Eb4'], 0.28),
+], vol=0.5)
+
+# 受惊警报（大力丸激活时循环播放）
+def _siren_sound():
+    a = _gen_sine(165, 0.22, 0.12)
+    b = _gen_sine(110, 0.22, 0.12)
+    combined = _array.array('h')
+    for _ in range(8):
+        combined.extend(a); combined.extend(b)
+    return pygame.mixer.Sound(buffer=combined)
+snd_siren = _siren_sound()
+
+# 主音量 (0.0 ~ 1.0)，按 [ 减小，按 ] 增大
+_master_vol = 0.5
+_all_sounds = [snd_intro, snd_waka[0], snd_waka[1], snd_power, snd_ghost, snd_death, snd_siren]
+
+def _apply_volume():
+    """把主音量应用到所有音效"""
+    for snd in _all_sounds:
+        snd.set_volume(_master_vol)
+
+_apply_volume()
+
+# 音效通道
+_ch_music = pygame.mixer.Channel(0)   # 序曲 / 背景
+_ch_eat   = pygame.mixer.Channel(1)   # 吃豆子
+_ch_event = pygame.mixer.Channel(2)   # 死亡 / 吃幽灵
+_ch_siren = pygame.mixer.Channel(3)   # 受惊警报
 
 # 地图 (0=空 1=墙 2=豆子 3=大力丸 4=空地无豆子)
 LEVEL = [
@@ -204,6 +330,16 @@ def draw_hud():
 
     lives_text = font.render(f"生命: {lives}", True, WHITE)
     screen.blit(lives_text, (WIDTH - 120, HEIGHT - 40))
+
+    # 音量显示（居中底部）
+    bar_w = 80
+    bar_h = 8
+    bx = WIDTH // 2 - bar_w // 2
+    by = HEIGHT - 20
+    pygame.draw.rect(screen, (80, 80, 80), (bx, by, bar_w, bar_h))
+    pygame.draw.rect(screen, YELLOW, (bx, by, int(bar_w * _master_vol), bar_h))
+    vol_text = font.render(f"音量 [ ]  {int(_master_vol*100)}%", True, (180, 180, 180))
+    screen.blit(vol_text, (bx + bar_w + 6, HEIGHT - 25))
 
 
 # --- 幽灵类 ---
@@ -479,6 +615,7 @@ stage_clear = False
 death_timer = 0  # 死亡后短暂停顿
 
 # 游戏主循环
+_ch_music.play(snd_intro)   # 开场序曲
 running = True
 while running:
     clock.tick(FPS)
@@ -498,6 +635,10 @@ while running:
                 ghost_eat_combo = 0
                 game_map[:] = [row[:] for row in LEVEL]
                 reset_positions()
+                _waka_idx = 0
+                _ch_event.stop()
+                _ch_siren.stop()
+                _ch_music.play(snd_intro)
                 continue
             if event.key == pygame.K_LEFT:
                 pac_next_dir = 'LEFT'
@@ -507,6 +648,12 @@ while running:
                 pac_next_dir = 'UP'
             elif event.key == pygame.K_DOWN:
                 pac_next_dir = 'DOWN'
+            elif event.key == pygame.K_LEFTBRACKET:   # [ 降低音量
+                _master_vol = max(0.0, round(_master_vol - 0.1, 1))
+                _apply_volume()
+            elif event.key == pygame.K_RIGHTBRACKET:  # ] 提高音量
+                _master_vol = min(1.0, round(_master_vol + 0.1, 1))
+                _apply_volume()
 
     # 死亡停顿
     if death_timer > 0:
@@ -562,6 +709,8 @@ while running:
             game_map[row][col] = 4
             score += 10
             dots_eaten += 1
+            _ch_eat.play(snd_waka[_waka_idx % 2])
+            _waka_idx += 1
         elif game_map[row][col] == 3:
             game_map[row][col] = 4
             score += 50
@@ -572,6 +721,8 @@ while running:
             for g in ghosts:
                 if not g.eaten:
                     g.frightened = True
+            _ch_eat.play(snd_power)
+            _ch_siren.play(snd_siren, loops=-1)
 
     # 通关检测
     if dots_eaten >= dots_total:
@@ -594,6 +745,7 @@ while running:
             for g in ghosts:
                 g.frightened = False
             ghost_eat_combo = 0
+            _ch_siren.stop()
 
     # 碰撞检测
     if check_ghost_collision():
@@ -609,17 +761,21 @@ while running:
                     g.eaten = True
                     ghost_eat_combo += 1
                     score += 200 * (2 ** (ghost_eat_combo - 1))  # 200/400/800/1600
+                    _ch_event.play(snd_ghost)
                 elif not g.eaten:
                     hit_normal = True
         if hit_normal:
             lives -= 1
+            _ch_music.stop()
+            _ch_siren.stop()
+            _ch_event.play(snd_death)
             if lives <= 0:
                 game_over = True
             else:
                 reset_positions()
                 frightened_timer = 0
                 ghost_eat_combo = 0
-                death_timer = 60  # 停顿1秒
+                death_timer = 90  # 停顿1.5秒（等死亡音效播完）
 
     # 被吃掉的幽灵回到家后复活
     for g in ghosts:
